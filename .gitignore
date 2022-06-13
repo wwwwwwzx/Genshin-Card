@@ -47,6 +47,7 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+.DS_Store
 
 # Translations
 *.mo
@@ -112,3 +113,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Outputs and downloaded resources
+box.png
+Icons/UI_*.png
