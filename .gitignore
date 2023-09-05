@@ -116,4 +116,4 @@ dmypy.json
 
 # Outputs and downloaded resources
 box.png
-Icons/UI_*.png
+Icons/*.png
