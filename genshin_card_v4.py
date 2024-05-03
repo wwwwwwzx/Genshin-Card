@@ -1,15 +1,20 @@
 # %% request data
+import asyncio
+import os
 from functools import partial
-from PIL import Image, ImageFont, ImageDraw
-import os, asyncio, requests
+
 import genshin
+import requests
+import yaml
+from PIL import Image, ImageDraw, ImageFont
+from datetime import datetime
 
 UID = 900003924
 Chinese = False  # 国服选True? 未测试
-brower = "edge"  # chrome, edge, choromium, firefox, opera，有登录mys/hoyolab账号的浏览器
-out_image_path = "box_v3.png"  # 输出文件名
+brower = "chrome"  # chrome, edge, choromium, firefox, opera，有登录mys/hoyolab账号的浏览器
+out_image_path = "box_v4.png"  # 输出文件名
 myfont = "zh-cn.ttf"  # 字体文件
-new = False  # 是否重新请求数据
+new = True  # 是否重新请求数据
 
 
 # %% =====================================
@@ -41,12 +46,15 @@ async def main():
                 item = details.__dict__ | character.__dict__
                 t = 0
                 talents = []
+                item["crown"] = 0
                 for talent in item["talents"]:
                     if talent.upgradeable:
                         if is_cons_talent(character, talent):
-                            talents.append((talent.level, 3))
+                            talents.append([talent.level, 3])
                         else:
-                            talents.append((talent.level, 0))
+                            talents.append([talent.level, 0])
+                        if talent.level == 10:
+                            item["crown"] += 1
                         t += 1
                 item["weapon"] = item["weapon"].__dict__
                 item["talents"] = talents
@@ -54,6 +62,8 @@ async def main():
                 if id in [5, 7]:  # traveler
                     item["name"] = "荧" if id == 7 else "空"
                     item["friendship"] = 10
+                    item["name"] += " (" + elememt_map[item["element"]] + ")"
+                    item["rarity"] = 4.5
                 found = True
             except Exception as e:
                 print(e)
@@ -62,6 +72,16 @@ async def main():
         cache.append(item)
     return cache
 
+
+elememt_map = {
+    "Anemo": "风",
+    "Geo": "岩",
+    "Electro": "雷",
+    "Dendro": "草",
+    "Hydro": "水",
+    "Pyro": "火",
+    "Cryo": "冰",
+}
 
 # colors
 conscolor = {
@@ -89,6 +109,7 @@ def talentcolor(x):
 black = (0, 0, 0, 255)
 raritycolor = {
     5: (255, 240, 211, 255),
+    4.5: (255, 240, 211, 255),
     4: (225, 204, 245, 255),
     3: (206, 215, 246, 255),
 }
@@ -110,43 +131,41 @@ except OSError:
 
 
 def sort_cache(cache):
+    cache.sort(key=lambda x: list(elememt_map.keys()).index(x["element"]))
     cache.sort(key=lambda x: x["id"], reverse=True)
     cache.sort(key=lambda x: x["weapon"]["rarity"], reverse=True)
     cache.sort(key=lambda x: x["constellation"], reverse=True)
     cache.sort(key=lambda x: x["talents"], reverse=True)
+    cache.sort(key=lambda x: x["crown"], reverse=True)
     cache.sort(key=lambda x: x["friendship"], reverse=True)
     cache.sort(key=lambda x: x["level"], reverse=True)
     cache.sort(key=lambda x: x["rarity"], reverse=True)
 
 
+def clean_dict(obj):
+    if isinstance(obj, dict):
+        return {k: clean_dict(v) for k, v in obj.items() if v is not None}
+    elif isinstance(obj, list):
+        return [clean_dict(v) for v in obj if v is not None]
+    elif hasattr(obj, "__dict__"):
+        return clean_dict(obj.__dict__)
+    else:
+        return obj
+
+
+try:
+    old_data = yaml.safe_load(open("cache.yml", encoding="utf-8"))
+except Exception:
+    old_data = {}
+
 if new:
     cache = asyncio.run(main())
-    sort_cache(cache)
-
-    try:
-        import yaml
-
-        def clean_dict(obj):
-            if isinstance(obj, dict):
-                return {k: clean_dict(v) for k, v in obj.items() if v is not None}
-            elif isinstance(obj, list):
-                return [clean_dict(v) for v in obj if v is not None]
-            elif hasattr(obj, "__dict__"):
-                return clean_dict(obj.__dict__)
-            else:
-                return obj
-
-        yaml.safe_dump(dict(cache=clean_dict(cache)), open("cache.yml", "w", encoding="utf-8"), sort_keys=False, allow_unicode=True)
-    except Exception as e:
-        import pickle
-
-        with open("cache.bin", "wb") as outfile:
-            pickle.dump(cache, outfile)
+    new_data = old_data | {c["name"]: c for c in cache}
+    new_data = clean_dict(new_data)
+    yaml.safe_dump(new_data, open("cache.yml", "w", encoding="utf-8"), sort_keys=False, allow_unicode=True)
+    cache = list(new_data.values())
 else:
-    import yaml
-
-    cache = yaml.safe_load(open("cache.yml", encoding="utf-8"))["cache"]
-
+    cache = list(old_data.values())
 
 sort_cache(cache)
 
@@ -176,12 +195,16 @@ def resizeimage(img, w, h):
 
 N = len(cache)
 N5 = len([c for c in cache if c["rarity"] == 5])
+N_main = len([c for c in cache if c["rarity"] == 4.5])
 N4 = N - N5
+N_max = max(N5, N4)
+if N5 == N4:
+    N_max += 1
 unit = lambda x: int(x * 50)
 col_width = unit(20)
 Unit = unit(1)
 Space = unit(1.2)
-card = Image.new("RGBA", (col_width * 2, Space * max(N5, N4) + unit(4.8)), (255, 255, 255, 255))
+card = Image.new("RGBA", (col_width * 2, Space * N_max + unit(3.6)), (255, 255, 255, 255))
 draw = ImageDraw.Draw(card)
 
 cnt_10 = 0
@@ -205,14 +228,21 @@ for ii, c in enumerate(cache):
     chbg = Image.new("RGBA", (unit(5), unit(1.2)), raritycolor[c["rarity"]])
     card.paste(chbg, (unit(0.2) + x_ofs, imy + y_ofs))
     icon = resizeimage(getimage(c), Unit, Unit)
-    draw.text((unit(0.6) + x_ofs, y + y_ofs), str(ii + 1), font=font(size=unit(0.4)), fill=black, anchor="mm")
-    card.paste(icon, (Unit + x_ofs, imy + y_ofs), icon)
+    if ii < N5:
+        idx = str(ii + 1)
+    elif N5 <= ii < N5 + N_main:
+        idx = str(N5 + 1) if ii == (N5 + N_main % 2 + 1) else ""
+    else:
+        idx = str(ii - N_main + 2)
+
+    if idx:
+        draw.text((unit(0.6) + x_ofs, y + y_ofs), idx, font=font(size=unit(0.4)), fill=black, anchor="mm")
+        card.paste(icon, (Unit + x_ofs, imy + y_ofs), icon)
+        draw.text((5 * Space + x_ofs, y + y_ofs), str(c["level"]), font=font(size=unit(0.6)), fill=black, anchor="mm")
     draw.text((3 * Space + x_ofs, y + y_ofs), c["name"], font=font(size=unit(0.55)), fill=black, anchor="mm")
-    draw.text((5 * Space + x_ofs, y + y_ofs), str(c["level"]), font=font(size=unit(0.6)), fill=black, anchor="mm")
     conbg = Image.new("RGBA", (unit(0.6), unit(0.9)), conscolor[c["constellation"]])
     card.paste(conbg, (unit(6.9) + x_ofs, imy + unit(0.1) + y_ofs))
     draw.text((6 * Space + x_ofs, y + y_ofs), str(c["constellation"]), font=font(size=unit(0.6)), fill=(255, 255, 255, 255), anchor="mm")
-    draw.text((7 * Space + x_ofs, y + y_ofs), str(c["friendship"]), font=font(size=unit(0.6)), fill=(235, 107, 132, 255), anchor="mm")
     for ii, (t1, t2) in enumerate(c["talents"]):
         tbg = Image.new("RGBA", (unit(1.2), unit(1.2)), talentcolor(t1))
         card.paste(tbg, (unit(9.1 + ii * 1.2) + x_ofs, imy + y_ofs))
@@ -233,7 +263,7 @@ for ii, c in enumerate(cache):
         )
     draw.text(
         (7 * Space + x_ofs, y + y_ofs),
-        str(c["friendship"]),
+        str(c["friendship"]) if idx else "",
         font=font(size=unit(0.6)),
         fill=(235, 107, 132, 255) if c["friendship"] == 10 else black,
         anchor="mm",
@@ -242,17 +272,18 @@ for ii, c in enumerate(cache):
     w = c["weapon"]
     chbg = Image.new("RGBA", (unit(7), unit(1.2)), raritycolor[w["rarity"]])
     card.paste(chbg, (unit(12.7) + x_ofs, imy + y_ofs))
-    draw.text((unit(13.1) + x_ofs, y + unit(0.05) + y_ofs), "Lv", font=font(size=unit(0.3)), fill=black, anchor="mm")
-    draw.text((unit(13.7) + x_ofs, y + y_ofs), str(w["level"]), font=font(size=unit(0.5)), fill=black, anchor="mm")
-    refbg = Image.new("RGBA", (unit(0.5), unit(0.7)), conscolor[w["refinement"] + 1])
-    card.paste(refbg, (unit(15.2) + x_ofs, imy + unit(0.2) + y_ofs))
-    draw.text((unit(15.45) + x_ofs, y + y_ofs), str(w["refinement"]), font=font(size=unit(0.4)), fill=(255, 255, 255, 255), anchor="mm")
-    draw.text((unit(17.5) + x_ofs, y + y_ofs), w["name"], font=font(size=unit(0.5)), fill=black, anchor="mm")
-    wicon = resizeimage(getimage(w), Unit, Unit)
-    card.paste(wicon, (unit(14.1) + x_ofs, imy + y_ofs), wicon)
+    if idx:
+        draw.text((unit(13.1) + x_ofs, y + unit(0.05) + y_ofs), "Lv", font=font(size=unit(0.3)), fill=black, anchor="mm")
+        draw.text((unit(13.7) + x_ofs, y + y_ofs), str(w["level"]), font=font(size=unit(0.5)), fill=black, anchor="mm")
+        refbg = Image.new("RGBA", (unit(0.5), unit(0.7)), conscolor[w["refinement"] + 1])
+        card.paste(refbg, (unit(15.2) + x_ofs, imy + unit(0.2) + y_ofs))
+        draw.text((unit(15.45) + x_ofs, y + y_ofs), str(w["refinement"]), font=font(size=unit(0.4)), fill=(255, 255, 255, 255), anchor="mm")
+        draw.text((unit(17.5) + x_ofs, y + y_ofs), w["name"], font=font(size=unit(0.5)), fill=black, anchor="mm")
+        wicon = resizeimage(getimage(w), Unit, Unit)
+        card.paste(wicon, (unit(14.1) + x_ofs, imy + y_ofs), wicon)
 
 draw.text((unit(0.6), unit(0.2)), f"UID: {UID}", font=font(size=unit(0.6)), fill=black)
-draw.text((col_width * 2 - unit(0.4), unit(0.2)), f"共{N}名角色", font=font(size=unit(0.6)), fill=black, anchor="rt")
+draw.text((col_width * 2 - unit(0.4), unit(0.2)), f"共{N-N_main+1} (+{N_main - 1})名角色", font=font(size=unit(0.6)), fill=black, anchor="rt")
 cnt_0 = N * 3 - cnt_10 - cnt_9 - cnt_6
 l0 = unit(0.2)
 total = 39.5
@@ -264,8 +295,22 @@ for cnt, clr in zip([cnt_0, cnt_6, cnt_9, cnt_10], [0, 6, 9, 10]):
         draw.text((l0, unit(1.3)), f"{clr}", font=font(size=unit(0.4)), fill=talentcolor(clr), anchor="mm")
         draw.text((l0 + unit(l / 2), unit(2)), f"{cnt}", font=font(size=unit(0.4)), fill=black, anchor="mm")
     l0 += unit(l)
-from datetime import datetime
 
-draw.text((col_width * 2 - unit(0.4), Space * max(N5, N4) + unit(3.8)), datetime.now().strftime("%Y/%m/%d"), font=font(size=unit(0.7)), fill=black, anchor="rt")
+if N5 >= N4:
+    draw.text(
+        (col_width * 2 - unit(0.4), Space * N_max + unit(2.6)),
+        datetime.now().strftime("%Y/%m/%d"),
+        font=font(size=unit(0.7)),
+        fill=black,
+        anchor="rt",
+    )
+else:
+    draw.text(
+        (unit(0.4), Space * N_max + unit(2.6)),
+        (datetime.now()).strftime("%Y/%m/%d"),
+        font=font(size=unit(0.7)),
+        fill=black,
+        anchor="lt",
+    )
 card.save(out_image_path, "PNG")
 os.startfile(out_image_path)
